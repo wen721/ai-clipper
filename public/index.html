@@ -9,13 +9,22 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <style>
-    body { margin: 0; }
+    body { margin: 0; background: #0B0B0D; color: #EDEAE3; font-family: system-ui; }
     ::-webkit-scrollbar { width: 8px; }
     ::-webkit-scrollbar-thumb { background: #2A2A2E; border-radius: 4px; }
+    #error-box { display:none; padding:16px; white-space:pre-wrap; font-family:monospace; font-size:12px; background:#2a0f0f; color:#ffb4a8; }
   </style>
 </head>
 <body>
+  <div id="error-box"></div>
   <div id="root"></div>
+  <script>
+    window.onerror = function(msg, src, line, col, err) {
+      var box = document.getElementById('error-box');
+      box.style.display = 'block';
+      box.textContent = 'ERROR: ' + msg + '\nLine: ' + line + ':' + col + '\n' + (err && err.stack ? err.stack : '');
+    };
+  </script>
   <script type="text/babel" data-presets="react" src="app.js"></script>
 </body>
 </html>

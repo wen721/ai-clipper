@@ -1,313 +1,42 @@
-const { useState, useRef } = React;
-
-const QUICK_MODE_LIMIT = 20 * 60; // videos under 20min: single-pass scan
-
-const fmt = (s) => {
-  if (!isFinite(s)) return "00:00";
-  const m = Math.floor(s / 60).toString().padStart(2, "0");
-  const sec = Math.floor(s % 60).toString().padStart(2, "0");
-  return `${m}:${sec}`;
-};
-
-function Icon({ children, spin }) {
-  return <span className={"inline-block leading-none " + (spin ? "animate-spin" : "")}>{children}</span>;
-}
-
-function AIClipper() {
-  const [videoUrl, setVideoUrl] = useState(null);
-  const [fileName, setFileName] = useState("");
-  const [duration, setDuration] = useState(0);
-  const [status, setStatus] = useState("idle");
-  const [progress, setProgress] = useState(0);
-  const [progressLabel, setProgressLabel] = useState("");
-  const [clips, setClips] = useState([]);
-  const [errorMsg, setErrorMsg] = useState("");
-  const [playingClip, setPlayingClip] = useState(null);
-  const [exportingIdx, setExportingIdx] = useState(null);
-  const [targetDur, setTargetDur] = useState(30);
-
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const watchdogRef = useRef(null);
-
-  const handleFile = (e) => {
-    const f = e.target.files && e.target.files[0];
-    if (!f) return;
-    if (videoUrl) URL.revokeObjectURL(videoUrl);
-    setVideoUrl(URL.createObjectURL(f));
-    setFileName(f.name);
-    setStatus("idle");
-    setClips([]);
-    setErrorMsg("");
-  };
-
-  const waitSeek = (video, t) =>
-    new Promise((resolve) => {
-      const onSeeked = () => {
-        video.removeEventListener("seeked", onSeeked);
-        resolve();
-      };
-      video.addEventListener("seeked", onSeeked);
-      video.currentTime = t;
-    });
-
-  const extractFrames = async (video, count, rangeStart, rangeEnd) => {
-    const canvas = canvasRef.current;
-    canvas.width = 224;
-    canvas.height = 126;
-    const ctx = canvas.getContext("2d");
-    const frames = [];
-    const span = rangeEnd - rangeStart;
-    const margin = span * 0.05;
-    for (let i = 0; i < count; i++) {
-      const t = rangeStart + margin + (i / Math.max(1, count - 1)) * (span - margin * 2);
-      await waitSeek(video, t);
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const dataUrl = canvas.toDataURL("image/jpeg", 0.55);
-      frames.push({ t, b64: dataUrl.split(",")[1] });
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Clipper</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    body { margin: 0; background: #0B0B0D; color: #EDEAE3; font-family: system-ui; }
+    #error-box { display:none; padding:16px; white-space:pre-wrap; font-family:monospace; font-size:12px; background:#2a0f0f; color:#ffb4a8; }
+  </style>
+</head>
+<body>
+  <div id="error-box"></div>
+  <div id="root"></div>
+  <script>
+    function showError(err) {
+      var box = document.getElementById('error-box');
+      box.style.display = 'block';
+      box.textContent = 'ERROR: ' + (err && err.message ? err.message : err) + '\n\n' + (err && err.stack ? err.stack : '');
     }
-    return frames;
-  };
-
-  const callClaude = async (content) => {
-    const res = await fetch("/api/claude", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
-    });
-    if (!res.ok) {
-      const t = await res.text();
-      throw new Error("API error: " + t);
-    }
-    const data = await res.json();
-    const text = (data.content || [])
-      .map((b) => (b.type === "text" ? b.text : ""))
-      .join("")
-      .trim();
-    return text.replace(/```json|```/g, "").trim();
-  };
-
-  const analyze = async () => {
-    setErrorMsg("");
-    setClips([]);
-    const video = videoRef.current;
-    if (!video || !duration) return;
-
-    try {
-      if (duration <= QUICK_MODE_LIMIT) {
-        setStatus("scanning");
-        setProgress(0);
-        setProgressLabel("Mengambil frame…");
-        const frameCount = Math.min(14, Math.max(8, Math.round(duration / 4)));
-        const frames = await extractFrames(video, frameCount, 0, duration);
-        setProgress(50);
-
-        setStatus("thinking");
-        setProgressLabel("AI menganalisis momen…");
-        const clean = await callClaude([
-          {
-            type: "text",
-            text:
-              `Ini ${frames.length} frame merata dari video berdurasi ${duration.toFixed(1)} detik, ` +
-              `timestamp (detik): ${frames.map((f) => f.t.toFixed(1)).join(", ")}.\n\n` +
-              `Cari 3-5 rentang waktu paling menarik untuk klip pendek media sosial, tiap klip idealnya berdurasi ` +
-              `sekitar ${targetDur} detik (boleh ±5 detik), dalam rentang 0-${duration.toFixed(1)} detik.\n\n` +
-              `Balas HANYA JSON array, tanpa markdown:\n` +
-              `[{"start": 0.0, "end": 30.0, "title": "judul singkat", "reason": "alasan singkat", "score": 8}]`,
-          },
-          ...frames.map((f) => ({
-            type: "image",
-            source: { type: "base64", media_type: "image/jpeg", data: f.b64 },
-          })),
-        ]);
-        let parsed = JSON.parse(clean);
-        parsed = parsed
-          .filter((c) => typeof c.start === "number" && typeof c.end === "number" && c.end > c.start)
-          .map((c) => ({ ...c, start: Math.max(0, c.start), end: Math.min(duration, c.end) }))
-          .sort((a, b) => (b.score || 0) - (a.score || 0));
-        if (!parsed.length) throw new Error("AI tidak menemukan segmen yang cocok.");
-        setClips(parsed);
-        setProgress(100);
-        setStatus("done");
-        return;
-      }
-
-      // Batch mode for long videos
-      const targetSegments = Math.min(28, Math.max(10, Math.round(duration / 900)));
-      let segLen = duration / targetSegments;
-      segLen = Math.max(300, Math.min(1800, segLen));
-      const segCount = Math.ceil(duration / segLen);
-      const framesPerSeg = 5;
-
-      setStatus("scanning");
-      const allCandidates = [];
-
-      for (let s = 0; s < segCount; s++) {
-        const segStart = s * segLen;
-        const segEnd = Math.min(duration, segStart + segLen);
-        setProgressLabel(`Segmen ${s + 1}/${segCount} (${fmt(segStart)}–${fmt(segEnd)})`);
-        setProgress(Math.round((s / segCount) * 100));
-
-        const frames = await extractFrames(video, framesPerSeg, segStart, segEnd);
-        const clean = await callClaude([
-          {
-            type: "text",
-            text:
-              `Ini ${frames.length} frame dari SATU SEGMEN (${segStart.toFixed(1)}s–${segEnd.toFixed(1)}s) ` +
-              `di dalam video panjang total ${duration.toFixed(1)} detik. Timestamp frame: ` +
-              `${frames.map((f) => f.t.toFixed(1)).join(", ")}.\n\n` +
-              `Jika ada momen menarik untuk klip pendek media sosial di segmen ini (visual kuat/momen puncak), ` +
-              `usulkan MAKSIMAL 1 klip berdurasi sekitar ${targetDur} detik (±5 detik), start & end harus di dalam ` +
-              `rentang segmen ini. Beri skor relevansi 1-10. Jika segmen ini tidak menarik, balas array kosong.\n\n` +
-              `Balas HANYA JSON array (0 atau 1 item), tanpa markdown:\n` +
-              `[{"start": ${segStart.toFixed(1)}, "end": ${(segStart + targetDur).toFixed(1)}, "title": "judul singkat", "reason": "alasan singkat", "score": 7}]`,
-          },
-          ...frames.map((f) => ({
-            type: "image",
-            source: { type: "base64", media_type: "image/jpeg", data: f.b64 },
-          })),
-        ]);
-        try {
-          const parsed = JSON.parse(clean);
-          for (const c of parsed) {
-            if (typeof c.start === "number" && typeof c.end === "number" && c.end > c.start) {
-              allCandidates.push({ ...c, start: Math.max(0, c.start), end: Math.min(duration, c.end) });
-            }
-          }
-        } catch (e) {
-          // skip malformed segment response
-        }
-      }
-
-      if (!allCandidates.length) throw new Error("AI tidak menemukan momen menarik di sepanjang video.");
-      allCandidates.sort((a, b) => (b.score || 0) - (a.score || 0));
-      setClips(allCandidates.slice(0, 10));
-      setProgress(100);
-      setStatus("done");
-    } catch (err) {
-      console.error(err);
-      setErrorMsg(err.message || "Gagal menganalisis video.");
-      setStatus("error");
-    }
-  };
-
-  const previewClip = (idx) => {
-    const video = videoRef.current;
-    const clip = clips[idx];
-    if (!video || !clip) return;
-    clearTimeout(watchdogRef.current);
-    video.currentTime = clip.start;
-    video.play();
-    setPlayingClip(idx);
-    const check = () => {
-      if (video.currentTime >= clip.end || video.paused) {
-        video.pause();
-        setPlayingClip(null);
-        return;
-      }
-      watchdogRef.current = setTimeout(check, 100);
+    fetch('app.js')
+      .then(function(res) {
+        if (!res.ok) throw new Error('Gagal fetch app.js: ' + res.status);
+        return res.text();
+      })
+      .then(function(code) {
+        var compiled = Babel.transform(code, { presets: ['react'] }).code;
+        var script = document.createElement('script');
+        script.textContent = compiled;
+        document.body.appendChild(script);
+      })
+      .catch(showError);
+    window.onerror = function(msg, src, line, col, err) {
+      showError(err || (msg + ' (' + line + ':' + col + ')'));
     };
-    watchdogRef.current = setTimeout(check, 100);
-  };
-
-  const exportClip = async (idx) => {
-    const video = videoRef.current;
-    const clip = clips[idx];
-    if (!video || !clip) return;
-    setExportingIdx(idx);
-    try {
-      await waitSeek(video, clip.start);
-      const stream = video.captureStream ? video.captureStream() : video.mozCaptureStream();
-      const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
-        ? "video/webm;codecs=vp9,opus"
-        : "video/webm";
-      const recorder = new MediaRecorder(stream, { mimeType: mime });
-      const chunks = [];
-      recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-      const done = new Promise((resolve) => (recorder.onstop = resolve));
-
-      recorder.start();
-      video.play();
-      await new Promise((resolve) => {
-        const tick = () => {
-          if (video.currentTime >= clip.end || video.paused) {
-            resolve();
-            return;
-          }
-          requestAnimationFrame(tick);
-        };
-        tick();
-      });
-      video.pause();
-      recorder.stop();
-      await done;
-
-      const blob = new Blob(chunks, { type: "video/webm" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = (clip.title || "klip").replace(/[^a-z0-9]+/gi, "_").toLowerCase() + ".webm";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-    } catch (err) {
-      console.error(err);
-      setErrorMsg("Export gagal: " + (err.message || "unknown error"));
-    } finally {
-      setExportingIdx(null);
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-[#0B0B0D] text-[#EDEAE3]" style={{ fontFamily: "Georgia, serif" }}>
-      <canvas ref={canvasRef} className="hidden" />
-
-      <header className="border-b border-[#2A2A2E] px-6 py-5 flex items-center gap-3">
-        <div className="w-8 h-8 rounded-full border border-[#C9762A] flex items-center justify-center">
-          <Icon>✂</Icon>
-        </div>
-        <div>
-          <h1 className="text-lg tracking-wide">AI Clipper</h1>
-          <p className="text-xs text-[#8A8680] uppercase tracking-wider" style={{ fontFamily: "system-ui" }}>
-            Cari momen terbaik, potong otomatis
-          </p>
-        </div>
-      </header>
-
-      <main className="max-w-3xl mx-auto px-6 py-10">
-        <div className="relative border border-[#2A2A2E] rounded-sm overflow-hidden bg-[#0F0F11]">
-          {!videoUrl ? (
-            <label
-              className="flex flex-col items-center justify-center gap-3 py-24 cursor-pointer"
-              style={{ fontFamily: "system-ui" }}
-            >
-              <span className="text-2xl">⬆</span>
-              <span className="text-sm text-[#8A8680]">Klik untuk unggah video</span>
-              <input type="file" accept="video/*" className="hidden" onChange={handleFile} />
-            </label>
-          ) : (
-            <video
-              ref={videoRef}
-              src={videoUrl}
-              controls
-              className="w-full max-h-[420px] bg-black"
-              crossOrigin="anonymous"
-              onLoadedMetadata={(e) => setDuration(e.target.duration)}
-            />
-          )}
-        </div>
-
-        {videoUrl && (
-          <div
-            className="flex items-center justify-between mt-3 text-xs text-[#8A8680]"
-            style={{ fontFamily: "system-ui" }}
-          >
-            <span className="truncate max-w-[60%]">{fileName}</span>
-            <span>{fmt(duration)}</span>
-          </div>
-        )}
-
-        {videoUrl && (
-          <div
-
+  </script>
+</body>
+</html>

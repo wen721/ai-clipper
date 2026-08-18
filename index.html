@@ -28,7 +28,7 @@
   <script type="text/babel" data-presets="react">
 const { useState, useRef } = React;
 
-const QUICK_MODE_LIMIT = 20 * 60; // videos under 20min: single-pass scan
+const QUICK_MODE_LIMIT = 15 * 60; // hard cap: videos over 15min are rejected to limit API cost
 
 const fmt = (s) => {
   if (!isFinite(s)) return "00:00";
@@ -36,6 +36,23 @@ const fmt = (s) => {
   const sec = Math.floor(s % 60).toString().padStart(2, "0");
   return `${m}:${sec}`;
 };
+
+function wrapText(ctx, text, maxWidth) {
+  const words = (text || "").split(" ");
+  const lines = [];
+  let line = "";
+  for (const w of words) {
+    const test = line ? line + " " + w : w;
+    if (ctx.measureText(test).width > maxWidth && line) {
+      lines.push(line);
+      line = w;
+    } else {
+      line = test;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
 
 function Icon({ children, spin }) {
   return <span className={"inline-block leading-none " + (spin ? "animate-spin" : "")}>{children}</span>;
@@ -52,7 +69,7 @@ function AIClipper() {
   const [errorMsg, setErrorMsg] = useState("");
   const [playingClip, setPlayingClip] = useState(null);
   const [exportingIdx, setExportingIdx] = useState(null);
-  const [targetDur, setTargetDur] = useState(30);
+  const [targetDur, setTargetDur] = useState(8);
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -97,6 +114,21 @@ function AIClipper() {
     return frames;
   };
 
+  const generateThumbnails = async (clipsList) => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    canvas.width = 224;
+    canvas.height = 126;
+    const ctx = canvas.getContext("2d");
+    const withThumbs = [];
+    for (const c of clipsList) {
+      await waitSeek(video, c.start);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      withThumbs.push({ ...c, thumb: canvas.toDataURL("image/jpeg", 0.6) });
+    }
+    return withThumbs;
+  };
+
   const callClaude = async (content) => {
     const res = await fetch("/api/claude", {
       method: "POST",
@@ -122,101 +154,57 @@ function AIClipper() {
     if (!video || !duration) return;
 
     try {
-      if (duration <= QUICK_MODE_LIMIT) {
-        setStatus("scanning");
-        setProgress(0);
-        setProgressLabel("Mengambil frame…");
-        const frameCount = Math.min(14, Math.max(8, Math.round(duration / 4)));
-        const frames = await extractFrames(video, frameCount, 0, duration);
-        setProgress(50);
-
-        setStatus("thinking");
-        setProgressLabel("AI menganalisis momen…");
-        const clean = await callClaude([
-          {
-            type: "text",
-            text:
-              `Ini ${frames.length} frame merata dari video berdurasi ${duration.toFixed(1)} detik, ` +
-              `timestamp (detik): ${frames.map((f) => f.t.toFixed(1)).join(", ")}.\n\n` +
-              `Cari 3-5 rentang waktu paling menarik untuk klip pendek media sosial, tiap klip idealnya berdurasi ` +
-              `sekitar ${targetDur} detik (boleh ±5 detik), dalam rentang 0-${duration.toFixed(1)} detik.\n\n` +
-              `PENTING: titik "start" WAJIB tepat di momen yang paling nge-hook — visual paling kuat, aksi paling ` +
-              `dramatis, atau kejutan yang langsung menarik perhatian dalam 1-2 detik pertama. Jangan mulai dari ` +
-              `momen datar/transisi biasa, meskipun itu ada di tengah adegan yang lebih menarik.\n\n` +
-              `Balas HANYA JSON array, tanpa markdown:\n` +
-              `[{"start": 0.0, "end": 30.0, "title": "judul singkat", "reason": "alasan singkat termasuk kenapa start-nya nge-hook", "score": 8}]`,
-          },
-          ...frames.map((f) => ({
-            type: "image",
-            source: { type: "base64", media_type: "image/jpeg", data: f.b64 },
-          })),
-        ]);
-        let parsed = JSON.parse(clean);
-        parsed = parsed
-          .filter((c) => typeof c.start === "number" && typeof c.end === "number" && c.end > c.start)
-          .map((c) => ({ ...c, start: Math.max(0, c.start), end: Math.min(duration, c.end) }))
-          .sort((a, b) => (b.score || 0) - (a.score || 0));
-        if (!parsed.length) throw new Error("AI tidak menemukan segmen yang cocok.");
-        setClips(parsed);
-        setProgress(100);
-        setStatus("done");
-        return;
+      if (duration > QUICK_MODE_LIMIT) {
+        throw new Error(
+          `Video ini ${fmt(duration)} (lebih dari 15 menit). Untuk menghemat biaya, potong dulu video jadi ` +
+          `bagian-bagian di bawah 15 menit sebelum dianalisis. Fitur analisis otomatis video panjang (mode batch) ` +
+          `sengaja dimatikan karena butuh banyak pemanggilan API.`
+        );
       }
-
-      // Batch mode for long videos
-      const targetSegments = Math.min(28, Math.max(10, Math.round(duration / 900)));
-      let segLen = duration / targetSegments;
-      segLen = Math.max(300, Math.min(1800, segLen));
-      const segCount = Math.ceil(duration / segLen);
-      const framesPerSeg = 5;
 
       setStatus("scanning");
-      const allCandidates = [];
+      setProgress(0);
+      setProgressLabel("Mengambil frame…");
+      const frameCount = Math.min(10, Math.max(6, Math.round(duration / 8)));
+      const frames = await extractFrames(video, frameCount, 0, duration);
+      setProgress(50);
 
-      for (let s = 0; s < segCount; s++) {
-        const segStart = s * segLen;
-        const segEnd = Math.min(duration, segStart + segLen);
-        setProgressLabel(`Segmen ${s + 1}/${segCount} (${fmt(segStart)}–${fmt(segEnd)})`);
-        setProgress(Math.round((s / segCount) * 100));
+      setStatus("thinking");
+      setProgressLabel("AI menganalisis momen…");
+      const clean = await callClaude([
+        {
+          type: "text",
+          text:
+            `Ini ${frames.length} frame merata dari video berdurasi ${duration.toFixed(1)} detik, ` +
+            `timestamp (detik): ${frames.map((f) => f.t.toFixed(1)).join(", ")}.\n\n` +
+            `Cari 3-5 rentang waktu paling menarik untuk klip pendek media sosial, tiap klip idealnya berdurasi ` +
+            `sekitar ${targetDur} detik (boleh ±5 detik), dalam rentang 0-${duration.toFixed(1)} detik.\n\n` +
+            `PENTING: titik "start" WAJIB tepat di momen yang paling nge-hook — visual paling kuat, aksi paling ` +
+            `dramatis, atau kejutan yang langsung menarik perhatian dalam 1-2 detik pertama. Jangan mulai dari ` +
+            `momen datar/transisi biasa, meskipun itu ada di tengah adegan yang lebih menarik.\n\n` +
+            `Juga buatkan "title" yang berfungsi sebagai teks hook/caption pendek (maksimal 6 kata, gaya menarik ` +
+            `perhatian ala media sosial) yang akan ditampilkan sebagai overlay teks di video.\n\n` +
+            `Balas HANYA JSON array, tanpa markdown:\n` +
+            `[{"start": 0.0, "end": 8.0, "title": "teks hook singkat", "reason": "alasan singkat termasuk kenapa start-nya nge-hook", "score": 8}]`,
+        },
+        ...frames.map((f) => ({
+          type: "image",
+          source: { type: "base64", media_type: "image/jpeg", data: f.b64 },
+        })),
+      ]);
+      let parsed = JSON.parse(clean);
+      parsed = parsed
+        .filter((c) => typeof c.start === "number" && typeof c.end === "number" && c.end > c.start)
+        .map((c) => ({ ...c, start: Math.max(0, c.start), end: Math.min(duration, c.end) }))
+        .sort((a, b) => (b.score || 0) - (a.score || 0));
+      if (!parsed.length) throw new Error("AI tidak menemukan segmen yang cocok.");
 
-        const frames = await extractFrames(video, framesPerSeg, segStart, segEnd);
-        const clean = await callClaude([
-          {
-            type: "text",
-            text:
-              `Ini ${frames.length} frame dari SATU SEGMEN (${segStart.toFixed(1)}s–${segEnd.toFixed(1)}s) ` +
-              `di dalam video panjang total ${duration.toFixed(1)} detik. Timestamp frame: ` +
-              `${frames.map((f) => f.t.toFixed(1)).join(", ")}.\n\n` +
-              `Jika ada momen menarik untuk klip pendek media sosial di segmen ini (visual kuat/momen puncak), ` +
-              `usulkan MAKSIMAL 1 klip berdurasi sekitar ${targetDur} detik (±5 detik), start & end harus di dalam ` +
-              `rentang segmen ini. PENTING: titik "start" WAJIB tepat di momen paling nge-hook (visual kuat/aksi ` +
-              `dramatis/kejutan) yang langsung menarik perhatian dalam 1-2 detik pertama, bukan momen datar. ` +
-              `Beri skor relevansi 1-10. Jika segmen ini tidak menarik, balas array kosong.\n\n` +
-              `Balas HANYA JSON array (0 atau 1 item), tanpa markdown:\n` +
-              `[{"start": ${segStart.toFixed(1)}, "end": ${(segStart + targetDur).toFixed(1)}, "title": "judul singkat", "reason": "alasan singkat termasuk kenapa start-nya nge-hook", "score": 7}]`,
-          },
-          ...frames.map((f) => ({
-            type: "image",
-            source: { type: "base64", media_type: "image/jpeg", data: f.b64 },
-          })),
-        ]);
-        try {
-          const parsed = JSON.parse(clean);
-          for (const c of parsed) {
-            if (typeof c.start === "number" && typeof c.end === "number" && c.end > c.start) {
-              allCandidates.push({ ...c, start: Math.max(0, c.start), end: Math.min(duration, c.end) });
-            }
-          }
-        } catch (e) {
-          // skip malformed segment response
-        }
-      }
-
-      if (!allCandidates.length) throw new Error("AI tidak menemukan momen menarik di sepanjang video.");
-      allCandidates.sort((a, b) => (b.score || 0) - (a.score || 0));
-      setClips(allCandidates.slice(0, 10));
+      setProgressLabel("Membuat thumbnail…");
+      const withThumbs = await generateThumbnails(parsed);
+      setClips(withThumbs);
       setProgress(100);
       setStatus("done");
+
     } catch (err) {
       console.error(err);
       setErrorMsg(err.message || "Gagal menganalisis video.");
@@ -250,14 +238,50 @@ function AIClipper() {
     setExportingIdx(idx);
     try {
       await waitSeek(video, clip.start);
-      const stream = video.captureStream ? video.captureStream() : video.mozCaptureStream();
+
+      const exportCanvas = document.createElement("canvas");
+      exportCanvas.width = video.videoWidth || 720;
+      exportCanvas.height = video.videoHeight || 1280;
+      const ctx = exportCanvas.getContext("2d");
+
+      const canvasStream = exportCanvas.captureStream(30);
+      const videoStream = video.captureStream ? video.captureStream() : video.mozCaptureStream();
+      videoStream.getAudioTracks().forEach((t) => canvasStream.addTrack(t));
+
       const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
         ? "video/webm;codecs=vp9,opus"
         : "video/webm";
-      const recorder = new MediaRecorder(stream, { mimeType: mime });
+      const recorder = new MediaRecorder(canvasStream, { mimeType: mime });
       const chunks = [];
       recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
       const done = new Promise((resolve) => (recorder.onstop = resolve));
+
+      let drawing = true;
+      const drawFrame = () => {
+        if (!drawing) return;
+        ctx.drawImage(video, 0, 0, exportCanvas.width, exportCanvas.height);
+
+        const text = clip.title || "";
+        if (text) {
+          const fontSize = Math.round(exportCanvas.width * 0.055);
+          ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
+          ctx.textAlign = "center";
+          const maxWidth = exportCanvas.width * 0.86;
+          const lines = wrapText(ctx, text, maxWidth);
+          const lineHeight = fontSize * 1.3;
+          const paddingY = fontSize * 0.55;
+          const boxHeight = lines.length * lineHeight + paddingY * 2 - fontSize * 0.2;
+          const boxY = exportCanvas.height * 0.06;
+          ctx.fillStyle = "rgba(11,11,13,0.72)";
+          ctx.fillRect(exportCanvas.width * 0.05, boxY, exportCanvas.width * 0.9, boxHeight);
+          ctx.fillStyle = "#EDEAE3";
+          lines.forEach((ln, i) => {
+            ctx.fillText(ln, exportCanvas.width / 2, boxY + paddingY + fontSize + i * lineHeight - fontSize * 0.15);
+          });
+        }
+        requestAnimationFrame(drawFrame);
+      };
+      drawFrame();
 
       recorder.start();
       video.play();
@@ -272,6 +296,7 @@ function AIClipper() {
         tick();
       });
       video.pause();
+      drawing = false;
       recorder.stop();
       await done;
 
@@ -353,13 +378,13 @@ function AIClipper() {
                 min={5}
                 max={120}
                 value={targetDur}
-                onChange={(e) => setTargetDur(Number(e.target.value) || 30)}
+                onChange={(e) => setTargetDur(Number(e.target.value) || 8)}
                 disabled={status === "scanning" || status === "thinking"}
                 className="w-16 bg-[#0F0F11] border border-[#2A2A2E] rounded-sm px-2 py-1 text-[#EDEAE3]"
               />
               detik
             </label>
-            {duration > QUICK_MODE_LIMIT && <span className="text-[#C9762A]">Mode batch (video panjang)</span>}
+            {duration > QUICK_MODE_LIMIT && <span className="text-[#E0A458]">⚠ Video &gt;15 menit, potong dulu</span>}
           </div>
         )}
 
@@ -412,6 +437,13 @@ function AIClipper() {
                   key={idx}
                   className="border border-[#2A2A2E] rounded-sm px-4 py-3 flex items-center gap-4 bg-[#0F0F11]"
                 >
+                  {clip.thumb && (
+                    <img
+                      src={clip.thumb}
+                      alt=""
+                      className="w-16 h-9 object-cover rounded-sm shrink-0 border border-[#2A2A2E]"
+                    />
+                  )}
                   <div className="font-mono text-xs text-[#C9762A] shrink-0 w-24">
                     {fmt(clip.start)}–{fmt(clip.end)}
                   </div>
@@ -450,4 +482,4 @@ const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<AIClipper />);
   </script>
 </body>
-</html>
+  </html>

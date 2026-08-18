@@ -140,8 +140,11 @@ function AIClipper() {
               `timestamp (detik): ${frames.map((f) => f.t.toFixed(1)).join(", ")}.\n\n` +
               `Cari 3-5 rentang waktu paling menarik untuk klip pendek media sosial, tiap klip idealnya berdurasi ` +
               `sekitar ${targetDur} detik (boleh ±5 detik), dalam rentang 0-${duration.toFixed(1)} detik.\n\n` +
+              `PENTING: titik "start" WAJIB tepat di momen yang paling nge-hook — visual paling kuat, aksi paling ` +
+              `dramatis, atau kejutan yang langsung menarik perhatian dalam 1-2 detik pertama. Jangan mulai dari ` +
+              `momen datar/transisi biasa, meskipun itu ada di tengah adegan yang lebih menarik.\n\n` +
               `Balas HANYA JSON array, tanpa markdown:\n` +
-              `[{"start": 0.0, "end": 30.0, "title": "judul singkat", "reason": "alasan singkat", "score": 8}]`,
+              `[{"start": 0.0, "end": 30.0, "title": "judul singkat", "reason": "alasan singkat termasuk kenapa start-nya nge-hook", "score": 8}]`,
           },
           ...frames.map((f) => ({
             type: "image",
@@ -186,9 +189,11 @@ function AIClipper() {
               `${frames.map((f) => f.t.toFixed(1)).join(", ")}.\n\n` +
               `Jika ada momen menarik untuk klip pendek media sosial di segmen ini (visual kuat/momen puncak), ` +
               `usulkan MAKSIMAL 1 klip berdurasi sekitar ${targetDur} detik (±5 detik), start & end harus di dalam ` +
-              `rentang segmen ini. Beri skor relevansi 1-10. Jika segmen ini tidak menarik, balas array kosong.\n\n` +
+              `rentang segmen ini. PENTING: titik "start" WAJIB tepat di momen paling nge-hook (visual kuat/aksi ` +
+              `dramatis/kejutan) yang langsung menarik perhatian dalam 1-2 detik pertama, bukan momen datar. ` +
+              `Beri skor relevansi 1-10. Jika segmen ini tidak menarik, balas array kosong.\n\n` +
               `Balas HANYA JSON array (0 atau 1 item), tanpa markdown:\n` +
-              `[{"start": ${segStart.toFixed(1)}, "end": ${(segStart + targetDur).toFixed(1)}, "title": "judul singkat", "reason": "alasan singkat", "score": 7}]`,
+              `[{"start": ${segStart.toFixed(1)}, "end": ${(segStart + targetDur).toFixed(1)}, "title": "judul singkat", "reason": "alasan singkat termasuk kenapa start-nya nge-hook", "score": 7}]`,
           },
           ...frames.map((f) => ({
             type: "image",

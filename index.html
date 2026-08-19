@@ -28,7 +28,7 @@
   <script type="text/babel" data-presets="react">
 const { useState, useRef } = React;
 
-const QUICK_MODE_LIMIT = 15 * 60; // hard cap: videos over 15min are rejected to limit API cost
+const QUICK_MODE_LIMIT = 45 * 60; // hard cap: videos over 30min are rejected to limit API cost
 
 const fmt = (s) => {
   if (!isFinite(s)) return "00:00";
@@ -69,7 +69,7 @@ function AIClipper() {
   const [errorMsg, setErrorMsg] = useState("");
   const [playingClip, setPlayingClip] = useState(null);
   const [exportingIdx, setExportingIdx] = useState(null);
-  const [targetDur, setTargetDur] = useState(8);
+  const [targetDur, setTargetDur] = useState(30);
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -156,8 +156,8 @@ function AIClipper() {
     try {
       if (duration > QUICK_MODE_LIMIT) {
         throw new Error(
-          `Video ini ${fmt(duration)} (lebih dari 15 menit). Untuk menghemat biaya, potong dulu video jadi ` +
-          `bagian-bagian di bawah 15 menit sebelum dianalisis. Fitur analisis otomatis video panjang (mode batch) ` +
+          `Video ini ${fmt(duration)} (lebih dari 30 menit). Untuk menghemat biaya, potong dulu video jadi ` +
+          `bagian-bagian di bawah 30 menit sebelum dianalisis. Fitur analisis otomatis video panjang (mode batch) ` +
           `sengaja dimatikan karena butuh banyak pemanggilan API.`
         );
       }
@@ -378,13 +378,13 @@ function AIClipper() {
                 min={5}
                 max={120}
                 value={targetDur}
-                onChange={(e) => setTargetDur(Number(e.target.value) || 8)}
+                onChange={(e) => setTargetDur(Number(e.target.value) || 30)}
                 disabled={status === "scanning" || status === "thinking"}
                 className="w-16 bg-[#0F0F11] border border-[#2A2A2E] rounded-sm px-2 py-1 text-[#EDEAE3]"
               />
               detik
             </label>
-            {duration > QUICK_MODE_LIMIT && <span className="text-[#E0A458]">⚠ Video &gt;15 menit, potong dulu</span>}
+            {duration > QUICK_MODE_LIMIT && <span className="text-[#E0A458]">⚠ Video &gt;30 menit, potong dulu</span>}
           </div>
         )}
 
@@ -482,4 +482,4 @@ const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<AIClipper />);
   </script>
 </body>
-  </html>
+</html>
